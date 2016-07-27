@@ -1,0 +1,428 @@
+ProgName=$(basename $0)
+DirName=$(dirname $0)
+  
+sub_help(){
+	echo "$folder"
+    echo "Usage: $ProgName <subcommand> [options]"
+    echo "Subcommands:"
+    echo "    list      Displays a list of all scripts under the custom script directory"
+    echo "    status    Displays the current status of the given script"
+    echo "    enable    Links a script for usage on the system."
+    echo "    disable   Unlinks a script. The original file is not deleted"
+    echo "    create    Creates a new script for editing."
+    echo "    edit      Opens a script for editing."
+    echo "    rename    Renames a script."
+    echo "    show      Displays the code of a script."
+    echo "    format    Formats the content of a script to display help.#NOT IMPLEMENTED"
+    echo "    destroy   Deletes the script entirely."
+    echo "    test      Executes an unlinked script for testing."
+    echo "    config    Configures the custom script directory and default editor.#NOT IMPLEMENTED"
+    echo "    backup    Creates a backup of all scripts to a given directory."
+    echo "    restore   Copies a list of scripts to the default script directory."
+    echo "    move      Changes the default directory and relocates all scripts."
+    echo ""
+#    echo "For help with each subcommand run:"
+#    echo "$ProgName -h|--help <subcommand>"
+#    echo ""
+}
+
+sub_config(){
+	setup
+}
+
+sub_list(){
+	case $1 in
+	    "" | "-a" | "--all")
+		FILES=$(ls "$folder")
+		for f in $FILES
+		do
+			if isScript $f;then
+				sub_status $f
+			fi
+		done
+	        ;;
+	     "-i" | "--installed" | "-e" | "--enabled")
+		FILES=$(ls "$folder")
+		for f in $FILES
+		do
+			if isEnabled $f; then
+				sub_status $f
+			fi
+		done
+		;;
+	     "-u" | "--uninstalled" | "-d" | "disabled")
+                FILES=$(ls "$folder")
+                for f in $FILES
+                do
+                        if ! isEnabled $f; then
+				sub_status $f
+                        fi
+                done
+                ;;
+
+	    *)
+	        echo "Error: wrong parameter for subcommand"
+		sub_help
+	        ;;
+	esac
+}
+
+sub_enable(){
+	if hasConflict $1; then
+		echo "'$1' has a name conflict and cannot be enabled, please rename it"
+	else
+		if isScript $1;then
+			if isEnabled $1;then	
+				echo "'$1' is already enabled"
+			else
+				sudo chmod 755 "$folder"/"$1"
+				sudo ln -s "$folder"/"$1" /usr/bin/"$1"
+			fi
+		else
+			echo "Script '$1' does not exists"
+		fi
+	fi
+}
+
+sub_disable(){
+	if hasConflict $1; then
+		echo "Name conflict. No simlink deleted."
+	else
+		if isScript $1;then
+			if isEnabled $1;then
+				sudo rm -rf /usr/bin/"$1"
+				sudo chmod 644 "$folder"/"$1"
+			else
+				echo "'$1' is already disabled"
+			fi
+		else
+			echo "Script '$1' does not exists"
+		fi
+	fi
+}
+
+sub_status(){
+	local STATUS=""
+	if isScript $1; then
+		if hasConflict $1;then
+			STATUS="\e[93mNAME CONFLICT"
+		else
+			if isEnabled $1;then
+				STATUS="\e[92mENABLED"
+			else
+				STATUS="\e[91mDISABLED"				
+			fi
+		fi
+	else
+		STATUS="DOES NOT EXIST"
+	fi
+	echo -e "\e[39m\t$1\t\t\t$STATUS\e[0m"
+}
+
+sub_create(){
+	if isScript $1; then
+		echo "Script already exists, it will be opened for edition"
+		read
+	fi
+	sudo "$editor" "$folder"/"$1"
+}
+
+sub_edit(){
+	if isScript $1; then
+		sudo "$editor" "$folder"/"$1"
+	else
+		echo "Script does not exist, it will be created"
+		read
+		sudo "$editor" "$folder"/"$1"
+	fi
+}
+
+sub_show(){
+	if isScript $1; then
+		cat "$folder"/"$1"
+	else
+		echo "Script '$1' does not exist"
+	fi
+}
+
+sub_test(){
+	if isScript $1; then
+		script=$1
+		shift
+		sudo sh "$folder"/"$script" $@
+		if [ $? = 127 ]; then
+		    echo -e "\nThe script '$script' ended with an error." >&2
+		    exit 1
+		fi
+	else
+		echo "Script '$1' does not exist"
+	fi
+}
+
+sub_destroy(){
+	if isScript $1; then
+		echo -n "Script $1 will be completely erased. Are you sure? [y/N]:"
+		read aux
+		case $aux in
+		    [yY] )
+			sub_disable $1
+			sudo rm -rf "$folder"/"$1"
+			echo "Script deleted"
+		esac
+	else
+		echo "Script '$1' does not exist, nothing erased"
+	fi
+}
+
+sub_backup(){
+	if isScript $1; then
+		if [ -z ${2+x} ];then
+			local aux=$(pwd)
+			sudo cp $folder/$1 $aux
+			sudo chmod 664 $aux/$1
+		else
+			if [ -d $2 ] ;then
+				sudo cp $folder/$1 $2
+				sudo chmod 664 $2/$1
+			else
+				echo "$2 is  not a directory"
+			fi
+		fi
+	else
+		if [ ! -z ${1+x} ] && [ -d $1 ] ;then
+			sudo cp -R $folder $1
+		else
+			local aux=$(pwd)
+			sudo cp -R $folder $aux
+		fi
+	fi
+}
+
+sub_restore(){
+	if [ -f $1 ] && [ ! -d $1 ] ;then
+		if  isScript $1  ;then
+			echo -n "A script with name '$1' already exists. Overwrite? [y/N]: "
+			read aux
+			case $aux in
+			    [yY] )
+				sudo cp $1 $folder/$1
+				sudo chmod 644 $folder/$1
+			esac
+		else
+			sudo cp $1 $folder/$1
+			sudo chmod 644 $folder/$1
+		fi
+	else
+		echo "$1 is not a file"
+	fi
+}
+
+sub_rename(){
+	if isScript $2;then
+		echo "There is already a script with name $2"
+	else
+		if isScript $1;then
+			sudo mv $folder/$1 $folder/$2
+		else
+			echo "Script '$1' does not exist"
+		fi
+	fi
+}
+
+
+isScript(){
+	if [ -f "$folder"/"$1" ]; then
+		return 0 #means true
+	else
+		return 1 #false
+	fi
+}
+
+isEnabled(){	
+	if [ -f /usr/bin/"$1" ] && [ -L /usr/bin/"$1" ] ; then
+		local aux=$(readlink /usr/bin/"$1")
+		if  isScript $1  && [ $aux == "$folder"/"$1" ] ; then
+			return 0
+		else
+			return 1
+		fi
+	else
+		return 1
+	fi
+}
+
+hasConflict(){
+	if  isScript $1  ;then
+		if [ -f /usr/bin/"$1" ] ; then
+			if [ -L /usr/bin/"$1" ]; then
+				local aux=$(readlink /usr/bin/"$1")
+				if [ $aux == "$folder"/"$1" ] ; then
+					#echo "Link points to script, no conflict"
+					return 1
+				else
+					#echo "Link does not point to script, conflict"
+					return 0
+				fi
+			else
+				#echo "File in /usr/bin is not a link, conflict"
+				return 0
+			fi
+		else
+			#echo "No file in /usr/bin no conflict"
+			return 1
+		fi	
+	else
+		#echo "Does not exist, no conflict"
+		return 1
+	fi
+}
+
+sub_testing(){
+	if isScript $1 ;then
+		echo "$1 is script"
+	else
+		echo "$1 is not a script"
+	fi
+	if isEnabled $1; then
+		echo "$1 is enabled"
+	else
+		echo "$1 is not enabled"
+	fi
+	if hasConflict $1; then
+		echo "$1 has conflict"
+	else
+		echo "$1 has no conflict"
+	fi
+}
+
+sub_move(){
+	if [ ! -z ${1+x} ] && [ -d $1 ];then
+		echo -n "This will move all scripts under $folder to $1. Continue? [y/N]"
+		read aux
+		case $aux in
+		    [yY] )
+			echo -n "Changin folder permisions..."
+			cd $folder
+			sudo chmod 777 $1
+			echo "Done"
+
+			echo -n "Copying scripts..."
+			sudo cp -R * $1
+			echo "Done"
+
+			echo -n "Disabling scripts..."
+			FILES=$(ls "$folder")
+			for f in $FILES
+			do
+				if isScript $f;then
+					if isEnabled $f && ! hasConflict $f ;then
+						sub_disable $f
+					fi
+				fi
+			done
+			echo "Done"
+
+			echo "Updating config file..."			
+			folder=$1
+			echo "folder=$folder" | sudo tee /usr/bin/."$ProgName"_config
+			echo "editor=$editor" | sudo tee -a /usr/bin/."$ProgName"_config
+			echo "Done"
+			
+			echo -n "Enabling $ProgName executable..."			
+			sudo chmod 755 "$folder"/"$ProgName"
+			sudo rm -rf /usr/bin/"$ProgName"
+			sudo ln -s "$folder"/"$ProgName" /usr/bin/"$ProgName"
+			echo "Done"
+			
+		esac
+	else
+		echo "You must provide a directory"
+	fi
+}
+
+
+
+setup(){
+	#We ask for the folder
+        echo "This script will configure the script manager utility."
+        if [ -z ${folder+x} ]; then
+                folder=~/Scripts
+        fi
+        echo -n "Custom script default folder[$folder] :"
+        read aux
+        if [ ! $aux == "" ]; then
+               folder=$aux
+        fi
+
+	#We ask for the editor
+	if [ -z ${editor+x} ]; then
+		editor="nano"
+	fi
+	echo -n "Script editor[$editor] :"
+	read aux
+	if [ ! $aux == "" ]; then
+		editor=$aux
+	fi
+
+	if [ -d "$folder" ]; then
+		#We copy this script to the folder wanted for execution
+		sudo cp "$DirName"/"$ProgName" "$folder"/"$ProgName"
+
+		#We write the config file
+		echo "folder=$folder" | sudo tee /usr/bin/."$ProgName"_config
+		echo "editor=$editor" | sudo tee -a /usr/bin/."$ProgName"_config
+
+		#We link the script
+		sudo ln -s "$folder"/"$ProgName" /usr/bin/"$ProgName"
+	else
+		echo -n "The folder does not exist do you want to create it? [y/N]"
+		read aux
+		case $aux in
+		    [yY] )
+			sudo mkdir -p "$folder"
+			sudo chmod 777 "$folder"
+			if [ -d "$folder" ]; then
+				#We copy this script to the folder wanted for execution
+				sudo cp "$DirName"/"$ProgName" "$folder"/"$ProgName"
+
+				#We write the config file
+				echo "folder=$folder" | sudo tee /usr/bin/."$ProgName"_config
+				echo "editor=$editor" | sudo tee -a /usr/bin/."$ProgName"_config
+	
+				#We link the script
+				sudo ln -s "$folder"/"$ProgName" /usr/bin/"$ProgName"
+			fi
+		esac
+	fi
+
+	
+}
+
+
+  
+
+if [ -f "$DirName"/."$ProgName"_config ]; then
+	source "$DirName"/."$ProgName"_config
+	subcommand=$1
+	case $subcommand in
+	    "" | "-h" | "--help")
+		sub_help
+		;;
+	    *)
+		shift
+		sub_${subcommand} $@
+		if [ $? = 127 ]; then
+		    echo "Error: '$subcommand' is not a known subcommand." >&2
+		    echo "Run '$ProgName --help' for a list of known subcommands." >&2
+		    exit 1
+		fi
+		;;
+	esac
+else
+	echo -n "This utility is not configured for usage. Do you wish to setup now? [Y/n]:"
+	read aux
+	case $aux in
+	    "" | [yY] )
+		setup
+	esac
+fi
